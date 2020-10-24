@@ -4,8 +4,21 @@ import numpy as np
 from numpy import random
 
 
-class NNLayer(object):
+# load the mnist dataset
+def fetch(url):
+    import requests, gzip, os, numpy
+    fp = os.path.join(os.getcwd(), "tmp", url)
+    if os.path.isfile(fp):
+        with open(fp, "rb") as f:
+            dat = f.read()
+    else:
+        with open(fp, "wb") as f:
+            dat = requests.get(url).content
+            f.write(dat)
+    return numpy.frombuffer(gzip.decompress(dat), dtype=np.uint8).copy()
 
+
+class NNLayer(object):
     def __init__(self, size, activation_func='relu', layer_index=None):
         self.W = np.random.randn(size[0], size[1]) * math.sqrt(2.0 / size[1])
         self.bias = np.zeros(size[0])
@@ -15,12 +28,6 @@ class NNLayer(object):
         self.Sigma = np.zeros(size[0])
         self.dL_dW = np.zeros(size)
         self.dL_dB = np.zeros(size[0])
-        # with open('layer{}.npy'.format(layer_index), 'rb') as f:
-        #     self.W = np.load(f)
-        #     self.bias = np.load(f)
-        # with open('layer{}.npy'.format(layer_index), 'wb') as f:
-        #     np.save(f, self.W)
-        #     np.save(f, self.bias)
 
     def forward(self, X, delta_weight=None):
         self.X = X
@@ -53,6 +60,9 @@ class NNLayer(object):
         dZ_dW = self.X
         dZ_dB = np.ones(self.bias.shape)
 
+        dSigma_dX = []
+        dSigma_dW = []
+        dSigma_dB = []
         if self.activation_func == 'relu':
             # Todo (Check correctness)
             dSigma_dZ = np.heaviside(self.Z, 1.0)
@@ -60,15 +70,6 @@ class NNLayer(object):
             dSigma_dX = dZ_dX * dSigma_dZ[:, None]
             dSigma_dW = dZ_dW * dSigma_dZ[:, None]
             dSigma_dB = dSigma_dZ * dZ_dB
-
-            for neuron_index, dL_dSigma in enumerate(dL_dSigmas):
-                dL_dXi = dL_dSigma * dSigma_dX[neuron_index]
-                dL_dWi = dL_dSigma * dSigma_dW[neuron_index]
-                dL_dX += dL_dXi
-
-                self.dL_dW[neuron_index] += dL_dWi
-                self.dL_dB[neuron_index] += dL_dSigma * dSigma_dB[neuron_index]
-
         elif self.activation_func == 'softmax':
             # Todo (Check correctness)
             dSigma_dZ = self.softmax_grad(self.Sigma)
@@ -76,19 +77,22 @@ class NNLayer(object):
             dSigma_dW = np.dot(dSigma_dZ, np.tile(dZ_dW, (self.W.shape[0], 1)))
             dSigma_dB = np.dot(dSigma_dZ, dZ_dB)
 
-            for neuron_index, dL_dSigma in enumerate(dL_dSigmas):
-                dL_dXi = dL_dSigma * dSigma_dX[neuron_index]
-                dL_dWi = dL_dSigma * dSigma_dW[neuron_index]
-                dL_dX += dL_dXi
+        for neuron_index, dL_dSigma in enumerate(dL_dSigmas):
+            dL_dXi = dL_dSigma * dSigma_dX[neuron_index]
+            dL_dWi = dL_dSigma * dSigma_dW[neuron_index]
+            dL_dX += dL_dXi
 
-                self.dL_dW[neuron_index] += dL_dWi
-                self.dL_dB[neuron_index] += dL_dSigma * dSigma_dB[neuron_index]
+            self.dL_dW[neuron_index] += dL_dWi
+            self.dL_dB[neuron_index] += dL_dSigma * dSigma_dB[neuron_index]
 
         return dL_dX
 
     def update(self, learning_rate):
         self.W -= self.dL_dW * learning_rate
         self.bias -= self.dL_dB * learning_rate
+        # Reinitialize accumulated derivatives `dL_dW` and `dL_dB`
+        self.dL_dW = np.zeros(self.dL_dW.shape)
+        self.dL_dB = np.zeros(self.dL_dB.shape)
 
     def get_neuron_gradient_vector(self, neuron_index):
         return self.dL_dW[neuron_index]
@@ -116,7 +120,7 @@ class VanillaFCNN(object):
         predictions_count = predictions_Y.shape[0]
         l = predictions_Y[range(predictions_count), self.training_Y.argmax(axis=1)]
         with np.errstate(divide='ignore'):
-            log_likelihood = -np.where(l > 0.0000001, np.log(l), np.log(np.full(l.shape, 0.0000001)))
+            log_likelihood = -np.where(l > 0.0000001, np.log(l), np.log(np.full(l.shape, 0.00001)))
             log_likelihood[np.isneginf(log_likelihood)] = -1e9
         return np.sum(log_likelihood) / predictions_count
 
@@ -145,10 +149,7 @@ class VanillaFCNN(object):
     def get_neuron_gradient_vector(self, layer_index, neuron_index):
         return self.layers[layer_index].get_neuron_gradient_vector(neuron_index)
 
-    def compute_analytical_gradient(self, layer_index, neuron_index, delta):
-        predictions_Y = np.zeros((1, self.training_Y.shape[1]))
-        predictions_Y[0] = self.forward(self.training_X[0])
-        loss = self.cross_entropy_loss(predictions_Y)
+    def compute_analytical_gradient(self, loss, layer_index, neuron_index, delta):
         print('Base Loss value: ', loss)
 
         dW = np.zeros(self.layers[layer_index].W.shape)
@@ -158,14 +159,16 @@ class VanillaFCNN(object):
         for input_connection_index in range(self.layers[layer_index].W.shape[1]):
             dW[neuron_index][input_connection_index] = delta
 
-            predictions_Y[0] = self.forward(self.training_X[0], dW, layer_index)
-            delta_loss = self.cross_entropy_loss(predictions_Y) - loss
+            predictions_Y = np.zeros(self.training_Y.shape, dtype=float)
+            for input_index, Xtr in enumerate(self.training_X):
+                predictions_Y[input_index] = self.forward(Xtr, dW, layer_index)
 
-            dL_dW[input_connection_index] = delta_loss / delta
+            delta_loss = self.cross_entropy_loss(predictions_Y) - loss
+            dL_dW[input_connection_index] = delta_loss / (delta * self.training_X.shape[0])
 
             dW[neuron_index][input_connection_index] = 0.0
 
-        print('Delta Loss wrt W:\n ', dL_dW)
+        return dL_dW
 
 
 def generateTrainingDataset(inputSize, outputSize, datasetSize):
@@ -184,7 +187,7 @@ def create_neural_network():
     outputShapeSize = 10
 
     # Generate training dataset
-    trainingDatasetSize = 50
+    trainingDatasetSize = 100
     xTrs, yTrs = generateTrainingDataset(inputShapeSize, outputShapeSize, trainingDatasetSize)
 
     fcnn = VanillaFCNN(xTrs, yTrs)
@@ -194,10 +197,18 @@ def create_neural_network():
     return fcnn
 
 
+# X_train = fetch("train-images-idx3-ubyte.gz")[0x10:].reshape((-1, 28, 28))
+# Y_train = fetch("train-labels-idx1-ubyte.gz")[8:]
+# X_test = fetch("t10k-images-idx3-ubyte.gz")[0x10:].reshape((-1, 28, 28))
+# Y_test = fetch("t10k-labels-idx1-ubyte.gz")[8:]
+
 fcnn = create_neural_network()
 delta = 0.001
+epochs = 10
+loss = fcnn.train(epochs, delta)
+print('Estimated loss = %f' % loss)
 
-# fcnn.compute_analytical_gradient(1, 0, delta)
-
-print('Estimated loss = %f' % fcnn.train(1000, delta))
-# print('Gradient of the Loss computed using backprop:\n ', fcnn.get_neuron_gradient_vector(1, 0))
+# analytical_gradient = fcnn.compute_analytical_gradient(loss, 1, 0, delta)
+# print('Analytical gradient = {}, vector size = {}:\n '.format(analytical_gradient, analytical_gradient.shape))
+# backprop_gradient = fcnn.get_neuron_gradient_vector(1, 0)
+# print('Gradient of the Loss computed using backprop = {}, vector size = {}\n '.format(backprop_gradient, backprop_gradient.shape))
