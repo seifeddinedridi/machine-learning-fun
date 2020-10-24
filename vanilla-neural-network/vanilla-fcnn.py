@@ -3,6 +3,8 @@ import math
 import numpy as np
 from numpy import random
 
+np.random.seed(1337)
+
 
 # load the mnist dataset
 def fetch(url):
@@ -19,8 +21,9 @@ def fetch(url):
 
 
 class NNLayer(object):
-    def __init__(self, size, activation_func='relu', layer_index=None):
-        self.W = np.random.randn(size[0], size[1]) * math.sqrt(2.0 / size[1])
+    def __init__(self, size, activation_func='relu'):
+        # self.W = np.random.randn(size[0], size[1]) * math.sqrt(2.0 / size[1])
+        self.W = np.random.uniform(-1.0, 1.0, size) / np.sqrt(size[0] * size[1]).astype(np.float32)
         self.bias = np.zeros(size[0])
         self.activation_func = activation_func
         self.X = np.zeros(size[1])
@@ -60,30 +63,30 @@ class NNLayer(object):
         dZ_dW = self.X
         dZ_dB = np.ones(self.bias.shape)
 
-        dSigma_dX = []
-        dSigma_dW = []
-        dSigma_dB = []
+        dSigma_dZ = []
         if self.activation_func == 'relu':
             # Todo (Check correctness)
-            dSigma_dZ = np.heaviside(self.Z, 1.0)
-            # dSigma_dX = np.dot(dSigma_dZ, dZ_dX)
-            dSigma_dX = dZ_dX * dSigma_dZ[:, None]
-            dSigma_dW = dZ_dW * dSigma_dZ[:, None]
-            dSigma_dB = dSigma_dZ * dZ_dB
+            dSigma_dZ = np.diag(np.heaviside(self.Z, 1.0))
         elif self.activation_func == 'softmax':
             # Todo (Check correctness)
             dSigma_dZ = self.softmax_grad(self.Sigma)
-            dSigma_dX = np.dot(dSigma_dZ, dZ_dX)
-            dSigma_dW = np.dot(dSigma_dZ, np.tile(dZ_dW, (self.W.shape[0], 1)))
-            dSigma_dB = np.dot(dSigma_dZ, dZ_dB)
 
-        for neuron_index, dL_dSigma in enumerate(dL_dSigmas):
-            dL_dXi = dL_dSigma * dSigma_dX[neuron_index]
-            dL_dWi = dL_dSigma * dSigma_dW[neuron_index]
-            dL_dX += dL_dXi
+        dSigma_dX = np.dot(dSigma_dZ, dZ_dX)
+        dSigma_dW = np.dot(dSigma_dZ, np.vstack([dZ_dW] * self.W.shape[0]))
+        dSigma_dB = np.dot(dSigma_dZ, dZ_dB)
 
-            self.dL_dW[neuron_index] += dL_dWi
-            self.dL_dB[neuron_index] += dL_dSigma * dSigma_dB[neuron_index]
+        dL_dX = np.dot(dL_dSigmas, dSigma_dX)
+        dL_dW = np.multiply(dL_dSigmas[:, np.newaxis], dSigma_dW)
+        self.dL_dW += dL_dW
+        self.dL_dB += np.dot(dL_dSigmas, dSigma_dB)
+
+        # for neuron_index, dL_dSigma in enumerate(dL_dSigmas):
+        #     dL_dXi = dL_dSigma * dSigma_dX[neuron_index]
+        #     dL_dWi = dL_dSigma * dSigma_dW[neuron_index]
+        #     dL_dX += dL_dXi
+        #
+        #     self.dL_dW[neuron_index] += dL_dWi
+        #     self.dL_dB[neuron_index] += dL_dSigma * dSigma_dB[neuron_index]
 
         return dL_dX
 
@@ -140,9 +143,10 @@ class VanillaFCNN(object):
             # Update the weights
             for layer in self.layers:
                 layer.update(learning_rate)
-            loss += self.cross_entropy_loss(predictions_Y)
 
-            print('Epoch %d / %d, Loss = %f' % (t + 1, epochs, loss / (t + 1)))
+            loss += self.cross_entropy_loss(predictions_Y)
+            accuracy = np.mean(np.argmax(predictions_Y, axis=1) == np.argmax(self.training_Y, axis=1))
+            print('Epoch %d / %d, Loss = %f, Accuracy = %.2f' % (t + 1, epochs, loss / (t + 1), accuracy.mean()))
 
         return loss / epochs
 
@@ -188,23 +192,25 @@ def create_neural_network():
 
     # Generate training dataset
     trainingDatasetSize = 100
-    xTrs, yTrs = generateTrainingDataset(inputShapeSize, outputShapeSize, trainingDatasetSize)
+    # X_train, Y_train = generateTrainingDataset(inputShapeSize, outputShapeSize, trainingDatasetSize)
 
-    fcnn = VanillaFCNN(xTrs, yTrs)
-    fcnn.addLayer(NNLayer((64, inputShapeSize), 'relu', 1))
-    fcnn.addLayer(NNLayer((64, 64), 'relu', 2))
-    fcnn.addLayer(NNLayer((outputShapeSize, 64), 'softmax', 3))
+    X_train = fetch("train-images-idx3-ubyte.gz")[0x10:].reshape((-1, 784))[0:trainingDatasetSize, ]
+    Y_train = fetch("train-labels-idx1-ubyte.gz")[8:][0:trainingDatasetSize]
+    X_test = fetch("t10k-images-idx3-ubyte.gz")[0x10:].reshape((-1, 784))
+    Y_test = fetch("t10k-labels-idx1-ubyte.gz")[8:]
+
+    # Convert Y_train and Y_test into hot vectors
+    Y_train_1hv = np.zeros((Y_train.size, Y_train.max() + 1))
+    Y_train_1hv[np.arange(Y_train.size), Y_train] = 1
+
+    fcnn = VanillaFCNN(X_train, Y_train_1hv)
+    fcnn.addLayer(NNLayer((128, inputShapeSize), 'relu'))
+    fcnn.addLayer(NNLayer((outputShapeSize, 128), 'softmax'))
     return fcnn
-
-
-# X_train = fetch("train-images-idx3-ubyte.gz")[0x10:].reshape((-1, 28, 28))
-# Y_train = fetch("train-labels-idx1-ubyte.gz")[8:]
-# X_test = fetch("t10k-images-idx3-ubyte.gz")[0x10:].reshape((-1, 28, 28))
-# Y_test = fetch("t10k-labels-idx1-ubyte.gz")[8:]
 
 fcnn = create_neural_network()
 delta = 0.001
-epochs = 10
+epochs = 1000
 loss = fcnn.train(epochs, delta)
 print('Estimated loss = %f' % loss)
 
