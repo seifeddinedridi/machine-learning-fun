@@ -22,7 +22,7 @@ def fetch(url):
 def softmax_grad(X):
     # Reshape the 1-d softmax to 2-d so that np.dot will do the matrix multiplication
     s = X.reshape(-1, 1)
-    return np.diagflat(s) - np.dot(s, s.T)
+    return np.diagflat(X) - np.dot(s, s.T)
 
 
 def cross_entropy_loss(predictions_Y, train_Y):
@@ -55,7 +55,7 @@ class NNLayer(object):
     def apply_activation(self, Z):
         if self.activation_func == 'relu':
             return np.maximum(0.0, Z)
-        elif self.activation_func == 'softmax':
+        elif self.activation_func == 'cross_entropy_softmax':
             exps = np.exp(Z - np.max(Z))
             return exps / np.sum(exps)
         else:
@@ -67,22 +67,21 @@ class NNLayer(object):
         dZ_dW = self.X
         dZ_dB = np.ones(self.bias.shape)
 
-        dSigma_dZ = []
-        if self.activation_func == 'relu':
-            # Todo (Check correctness)
-            dSigma_dZ = np.diag(np.heaviside(self.Z, 1.0))
-        elif self.activation_func == 'softmax':
-            # Todo (Check correctness)
-            dSigma_dZ = softmax_grad(self.Sigma)
+        if self.activation_func == 'cross_entropy_softmax':
+            # dL_dSigmas actually refers to the derivative of the loss function wrt. the softmax input which is Z
+            # So it is actually dL_dZ rather than dL_dSigmas
+            dL_dZ = dL_dSigmas
+        elif self.activation_func == 'relu':
+            dL_dZ = dL_dSigmas
+            dL_dZ[self.Z <= 0] = 0.0
+        else:
+            raise NameError('Unsupported activation function ' + self.activation_func)
 
-        dSigma_dX = np.dot(dSigma_dZ, dZ_dX)
-        dSigma_dW = np.dot(dSigma_dZ, np.vstack([dZ_dW] * self.W.shape[0]))
-        dSigma_dB = np.dot(dSigma_dZ, np.vstack([dZ_dB] * self.W.shape[0]))
+        dL_dW = np.multiply(dL_dZ[:, np.newaxis], dZ_dW)
+        # dL_dB = dL_dZ * dZ_dB.sum(axis=0)
+        dL_dB = dL_dZ * dZ_dB
+        dL_dX = np.dot(dL_dZ, dZ_dX)
 
-        dL_dX = np.dot(dL_dSigmas, dSigma_dX)
-        dL_dW = np.multiply(dL_dSigmas[:, np.newaxis], dSigma_dW)
-        # dL_dW = np.vstack(dL_dSigmas) * dSigma_dW.sum(axis=0)
-        dL_dB = dL_dSigmas * dSigma_dB.sum(axis=0)
         assert dL_dX.shape == self.X.shape
         assert self.dL_dW.shape == dL_dW.shape
         assert self.dL_dB.shape == dL_dB.shape
@@ -131,12 +130,12 @@ class VanillaFCNN(object):
                 predictions_Y[input_index] = self.forward(Xtr)
 
                 # Backpropagation
-                # Start with the derivative of the Loss function wrt. last layer's output
-                dL_dX = predictions_Y[input_index].copy()
-                dL_dX[batch_train_Y[input_index]] -= 1.0
+                # Start with the derivative of the Loss function wrt. the softmax function's input
+                dL_dZ = predictions_Y[input_index].copy()
+                dL_dZ[batch_train_Y[input_index]] -= 1.0
 
                 for layer in reversed(self.layers):
-                    dL_dX = layer.backward(dL_dX)
+                    dL_dZ = layer.backward(dL_dZ)
 
             # Update the weights
             for layer in self.layers:
@@ -146,8 +145,6 @@ class VanillaFCNN(object):
             accuracy = np.mean(np.argmax(predictions_Y, axis=1) == batch_train_Y)
             t.set_description(
                 'Epoch %d / %d, Loss = %f, Accuracy = %.2f' % (i + 1, max_epoch, loss / (i + 1), accuracy.mean()))
-
-        return loss / max_epoch
 
     def get_neuron_gradient_vector(self, layer_index, neuron_index):
         return self.layers[layer_index].get_neuron_gradient_vector(neuron_index)
@@ -185,15 +182,14 @@ def create_neural_network():
     outputShapeSize = 10
     fcnn = VanillaFCNN(X_train, Y_train, (inputShapeSize, outputShapeSize))
     fcnn.addLayer(NNLayer((128, inputShapeSize), 'relu'))
-    fcnn.addLayer(NNLayer((outputShapeSize, 128), 'softmax'))
+    fcnn.addLayer(NNLayer((outputShapeSize, 128), 'cross_entropy_softmax'))
     return fcnn
 
 
 network_parameters = {'delta': 0.001, 'epochs': 1000, 'batch_size': 128}
 
 fcnn = create_neural_network()
-loss = fcnn.train(network_parameters['epochs'], network_parameters['delta'], network_parameters['batch_size'])
-print('Estimated loss = %f' % loss)
+fcnn.train(network_parameters['epochs'], network_parameters['delta'], network_parameters['batch_size'])
 
 # analytical_gradient = fcnn.compute_analytical_gradient(loss, 1, 0, delta)
 # print('Analytical gradient = {}, vector size = {}:\n '.format(analytical_gradient, analytical_gradient.shape))
